@@ -1,38 +1,203 @@
-import numpy as np
-import matplotlib.pyplot as plt
+import sys
+from PyQt5 import QtWidgets, QtCore
 
-Time = [0, 12, 24, 36, 48, 60, 72, 84, 96]
-OD600 = [0.1, 3, 5, 10, 12, 15, 18, 20, 25]
-Xylose = [40, 36, 25, 15, 5, 2, 1, 0, 0]
-Ethanol = [0, 2, 5, 9, 10, 11, 12, 12, 12]
-Xylitol = [0, 1, 1.5, 1.8, 2.0, 2.1, 2.2, 2.3, 10]
-Acetate = [0, 0.5, 1.0, 1.2, 1.5, 1.8, 1.9, 2.0, 2.1]
+class ReorderableListModel(QtCore.QAbstractListModel):
+    '''
+    ReorderableListModel is a list model which implements reordering of its
+    items via drag-n-drop
+    '''
+    dragDropFinished = QtCore.pyqtSignal()
 
-fig, ax1 = plt.subplots(figsize=(7, 6))
+    def __init__(self, parent=None):
+        QtCore.QAbstractItemModel.__init__(self, parent)
+        self.nodes = ['node0', 'node1', 'node2', 'node3', 'node4', 'node5']
+        self.lastDroppedItems = []
+        self.pendingRemoveRowsAfterDrop = False
 
-ax1.plot(Time, Xylose, 'bv', markersize=10, label='Xylose')  # blue and symbol o
-ax1.plot(Time, Xylose, '-', linewidth=3.0,
-         color='b')  # '-' means solid line. Linewidth is 2.0. Color of the line is blue.
-ax1.plot(Time, Ethanol, 'r^', markersize=10, label='Ethanol')  # red and symble triangle up
-ax1.plot(Time, Ethanol, '-', linewidth=3.0, color='r')
-ax1.plot(Time, OD600, 'ko', markersize=10, label='OD600')  # red and symble triangle up
-ax1.plot(Time, OD600, '-', linewidth=3.0, color='k')
-ax1.legend(bbox_to_anchor=(0, 1), loc=2, borderaxespad=0.5, fontsize=15)
+    def rowForItem(self, text):
+        '''
+        rowForItem method returns the row corresponding to the passed in item
+        or None if no such item exists in the model
+        '''
+        try:
+            row = self.nodes.index(text)
+        except ValueError:
+            return None
+        return row
 
-ax1.set_xlabel('Time(h)', fontsize=15)
-ax1.set_ylabel('OD600, Xylose and Ethanol (g/L)', fontsize=15)
-ax1.tick_params(direction="in", labelsize=14, size=5)
+    def index(self, row, column, parent):
+        if row < 0 or row >= len(self.nodes):
+            return QtCore.QModelIndex()
+        return self.createIndex(row, column)
 
-ax2 = ax1.twinx()
-ax2.plot(Time, Xylitol, 'cp', markersize=10, label='Xylitol')
-ax2.plot(Time, Xylitol, '-', linewidth=3.0, color='c')
-ax2.plot(Time, Acetate, 'g*', markersize=10, label='Acetate')
-ax2.plot(Time, Acetate, '-', linewidth=3.0, color='g')
-ax2.legend(bbox_to_anchor=(1, 1), loc=1, borderaxespad=0.5, fontsize=15)
+    def parent(self, index):
+        return QtCore.QModelIndex()
 
-ax2.set_ylabel('Xylitol and Acetate (g/L)', fontsize=15)
-ax2.tick_params(direction="in", labelsize=15, size=5)
+    def rowCount(self, index):
+        if index.isValid():
+            return 0
+        return len(self.nodes)
 
-fig.tight_layout()
-plt.savefig('plot1.png')
-plt.show()
+    def data(self, index, role):
+        if not index.isValid():
+            return None
+        if role == QtCore.Qt.DisplayRole:
+            row = index.row()
+            if row < 0 or row >= len(self.nodes):
+                return None
+            return self.nodes[row]
+        else:
+            return None
+
+    def supportedDropActions(self):
+        return QtCore.Qt.MoveAction
+
+    def flags(self, index):
+        if not index.isValid():
+            return QtCore.Qt.ItemIsEnabled
+        return QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable | \
+               QtCore.Qt.ItemIsDragEnabled | QtCore.Qt.ItemIsDropEnabled
+
+    def insertRows(self, row, count, index):
+        if index.isValid():
+            return False
+        if count <= 0:
+            return False
+        # inserting 'count' empty rows starting at 'row'
+        self.beginInsertRows(QtCore.QModelIndex(), row, row + count - 1)
+        for i in range(0, count):
+            self.nodes.insert(row + i, '')
+        self.endInsertRows()
+        return True
+
+    def removeRows(self, row, count, index):
+        if index.isValid():
+            return False
+        if count <= 0:
+            return False
+        num_rows = self.rowCount(QtCore.QModelIndex())
+        self.beginRemoveRows(QtCore.QModelIndex(), row, row + count - 1)
+        for i in range(count, 0, -1):
+            self.nodes.pop(row - i + 1)
+        self.endRemoveRows()
+
+        if self.pendingRemoveRowsAfterDrop:
+            '''
+            If we got here, it means this call to removeRows is the automatic
+            'cleanup' action after drag-n-drop performed by Qt
+            '''
+            self.pendingRemoveRowsAfterDrop = False
+            self.dragDropFinished.emit()
+
+        return True
+
+    def setData(self, index, value, role):
+        if not index.isValid():
+            return False
+        if index.row() < 0 or index.row() > len(self.nodes):
+            return False
+        self.nodes[index.row()] = str(value)
+        self.dataChanged.emit(index, index)
+        return True
+
+    def mimeTypes(self):
+        return ['application/vnd.treeviewdragdrop.list']
+
+    def mimeData(self, indexes):
+        mimedata = QtCore.QMimeData()
+        encoded_data = QtCore.QByteArray()
+        stream = QtCore.QDataStream(encoded_data, QtCore.QIODevice.WriteOnly)
+        for index in indexes:
+            if index.isValid():
+                text = self.data(index, 0)
+        stream << QtCore.QByteArray(text.encode('utf-8'))
+        mimedata.setData('application/vnd.treeviewdragdrop.list', encoded_data)
+        return mimedata
+
+    def dropMimeData(self, data, action, row, column, parent):
+        if action == QtCore.Qt.IgnoreAction:
+            return True
+        if not data.hasFormat('application/vnd.treeviewdragdrop.list'):
+            return False
+        if column > 0:
+            return False
+
+        num_rows = self.rowCount(QtCore.QModelIndex())
+        if num_rows <= 0:
+            return False
+
+        if row < 0:
+            if parent.isValid():
+                row = parent.row()
+            else:
+                return False
+
+        encoded_data = data.data('application/vnd.treeviewdragdrop.list')
+        stream = QtCore.QDataStream(encoded_data, QtCore.QIODevice.ReadOnly)
+
+        new_items = []
+        rows = 0
+        while not stream.atEnd():
+            text = QtCore.QByteArray()
+            stream >> text
+            text = bytes(text).decode('utf-8')
+            index = self.nodes.index(text)
+            new_items.append((text, index))
+            rows += 1
+
+        self.lastDroppedItems = []
+        for (text, index) in new_items:
+            target_row = row
+            if index < row:
+                target_row += 1
+            self.beginInsertRows(QtCore.QModelIndex(), target_row, target_row)
+            self.nodes.insert(target_row, text)
+            self.endInsertRows()
+            self.lastDroppedItems.append(text)
+            row += 1
+
+        self.pendingRemoveRowsAfterDrop = True
+        return True
+
+class SelectionModel(QtCore.QItemSelectionModel):
+    def __init__(self, parent=None):
+        QtCore.QItemSelectionModel.__init__(self, parent)
+
+    def onModelItemsReordered(self):
+        new_selection = QtCore.QItemSelection()
+        new_index = QtCore.QModelIndex()
+        for item in self.model().lastDroppedItems:
+            row = self.model().rowForItem(item)
+            if row is None:
+                continue
+            new_index = self.model().index(row, 0, QtCore.QModelIndex())
+            new_selection.select(new_index, new_index)
+
+        self.clearSelection()
+        flags = QtCore.QItemSelectionModel.ClearAndSelect | \
+                QtCore.QItemSelectionModel.Rows | \
+                QtCore.QItemSelectionModel.Current
+        self.select(new_selection, flags)
+        self.setCurrentIndex(new_index, flags)
+
+class MainForm(QtWidgets.QMainWindow):
+    def __init__(self, parent=None):
+        QtWidgets.QMainWindow.__init__(self, parent)
+        self.model = ReorderableListModel()
+        self.selectionModel = SelectionModel(self.model)
+        self.model.dragDropFinished.connect(self.selectionModel.onModelItemsReordered)
+        self.view = QtWidgets.QListView()
+        self.view.setModel(self.model)
+        self.view.setSelectionModel(self.selectionModel)
+        self.view.setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
+        self.view.setDragDropOverwriteMode(False)
+        self.setCentralWidget(self.view)
+
+def main():
+    app = QtWidgets.QApplication(sys.argv)
+    form = MainForm()
+    form.show()
+    app.exec_()
+
+if __name__ == '__main__':
+    main()

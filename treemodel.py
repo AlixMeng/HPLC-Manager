@@ -3,7 +3,9 @@ import pandas
 from PyQt5.QtCore import (QAbstractItemModel, QFile, QIODevice,
         QItemSelectionModel, QModelIndex, Qt, QMimeType)
 from PyQt5.QtWidgets import QApplication, QMainWindow
-
+import _pickle as pickle
+import io as cStringIO
+import copy
 import hplcextractor
 
 class TreeItem(object):
@@ -11,6 +13,16 @@ class TreeItem(object):
         self.parentItem = parent
         self.itemData = data
         self.childItems = []
+
+        #if parent is not None:
+            #self.parentItem.addChild(self)
+
+    #def __len__(self):
+        #return len(self.childItems)
+
+    def addChild(self, child):
+        self.childItems.append(child)
+        child.parentItem = self
 
     def child(self, row):
         return self.childItems[row]
@@ -84,13 +96,53 @@ class TreeItem(object):
 
         return True
 
+# ===================================================================================
 
+class PyObjMime(QtCore.QMimeData):
+    MIMETYPE = 'application/x-pyobj'
+
+    def __init__(self, data=None):
+        super(PyObjMime, self).__init__()
+
+        self.data = data
+        if data is not None:
+            # Try to pickle data
+            try:
+                pdata = pickle.dumps(data)
+            except:
+                return
+
+            self.setData(self.MIMETYPE, pickle.dumps(data.__class__) + pdata)
+
+    def itemInstance(self):
+        if self.data is not None:
+            return self.data
+
+        io = cStringIO.StringIO(str(self.data(self.MIMETYPE)))
+
+        try:
+            # Skip the type.
+            pickle.load(io)
+
+            # Recreate the data.
+            return pickle.load(io)
+        except:
+            pass
+
+        return None
+
+# ===================================================================================
 class TreeModel(QAbstractItemModel):
     def __init__(self, headers, data, parent=None):
         super(TreeModel, self).__init__(parent)
         self.rootItem = TreeItem(headers)
         parents = [self.rootItem]
         self.dftotree(data, self.rootItem)
+
+    def itemFromIndex(self, index):
+        if index.isValid():
+            return index.internalPointer()
+        return self.rootItem
 
     def columnCount(self, parent=QModelIndex()):
         return self.rootItem.columnCount()
@@ -115,7 +167,6 @@ class TreeModel(QAbstractItemModel):
             return None
 
         item = self.getItem(index)
-        #return item.data
         return item.data(index.column())
 
     def itemDepth(self, index):
@@ -136,9 +187,8 @@ class TreeModel(QAbstractItemModel):
 
     def flags(self, index):
         if not index.isValid():
-            return 0 | QtCore.Qt.ItemIsEnabled
-
-        return Qt.ItemIsEditable | Qt.ItemIsEnabled | Qt.ItemIsSelectable | QtCore.Qt.ItemIsDragEnabled | QtCore.Qt.ItemIsDropEnabled
+            return QtCore.Qt.ItemIsEnabled  | QtCore.Qt.ItemIsDropEnabled
+        return QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsDropEnabled | QtCore.Qt.ItemIsDragEnabled | QtCore.Qt.ItemIsSelectable
 
     def getItem(self, index):
         if index.isValid():
@@ -214,7 +264,6 @@ class TreeModel(QAbstractItemModel):
 
     def rowCount(self, parent=QModelIndex()):
         parentItem = self.getItem(parent)
-
         return parentItem.childCount()
 
     def setData(self, index, value, role=Qt.EditRole):
@@ -240,15 +289,22 @@ class TreeModel(QAbstractItemModel):
         return result
 
     def mimeTypes(self):
-        return ['text/xml']
+        types = []
+        types.append('application/x-pyobj')
+        return types
 
-    def mimeData(self, indexes):
-        mimedata = QtCore.QMimeData()
-        mimedata.setData('text/xml', 'mimeData')
+    def mimeData(self, index):
+        item = self.itemFromIndex(index[0])
+        mimedata = PyObjMime(item)
         return mimedata
 
-    def dropMimeData(self, data, action, row, column, parent):
-        print("dropMimeData(%s %s %s %s" % (data.data('text/xml'), action, row, parent))
+    def dropMimeData(self, mimedata, action, row, column, parentIndex):
+        item = mimedata.itemInstance()
+        dropParent = self.itemFromIndex(parentIndex)
+        itemCopy = copy.deepcopy(item)
+        dropParent.addChild(itemCopy)
+        #self.insertRows(dropParent.childCount() - 1, 1, parentIndex)
+        self.dataChanged.emit(parentIndex, parentIndex)
         return True
 
     def supportedDropActions(self):
